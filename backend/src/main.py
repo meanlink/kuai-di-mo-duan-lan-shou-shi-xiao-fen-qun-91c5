@@ -11,9 +11,10 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from scripts.seed_demo import seed
-from . import review, scans
+from . import disputes, review, scans
 from .auth import allow, current_user, login
 from .db import Base, cache, engine, session
+from .dispute_routes import router as dispute_router
 from .expansion_routes import router as expansion_router
 from .handoff_routes import router as handoff_router
 from .models import AuditEvent, ClusterRun, PickupBatch, RemediationTask
@@ -36,6 +37,7 @@ async def lifespan(_app):
 app = FastAPI(title='快递末端揽收时效分群', lifespan=lifespan)
 app.include_router(expansion_router)
 app.include_router(handoff_router)
+app.include_router(dispute_router)
 
 
 @app.middleware('http')
@@ -94,7 +96,10 @@ def batch_detail(code: str, db=Depends(session), _user=Depends(current_user)):
     batch = db.scalar(select(PickupBatch).options(selectinload(PickupBatch.scans)).where(PickupBatch.code == code))
     if batch is None:
         raise HTTPException(404, '揽收批次不存在')
-    return scans.batch_record(batch, include_scans=True)
+    rows = disputes.batch_disputes(db, code)
+    record = scans.batch_record(batch, include_scans=True, disputes=rows)
+    record['disputes'] = [disputes.dispute_record(row) for row in rows]
+    return record
 
 
 @app.post('/batches', status_code=201)

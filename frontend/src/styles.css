@@ -208,3 +208,11 @@ dialog header { display: flex; justify-content: space-between; gap: 10px; align-
 .shift-events { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
 .shift-events summary { width: fit-content; cursor: pointer; }
 .shift-events .timeline { margin-top: 10px; overflow-wrap: anywhere; }
+
+.dispute-section { margin-top: 18px; }
+.dispute-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 12px 0; }
+.dispute-side { border: 1px solid var(--line); border-radius: 5px; padding: 12px 14px; background: var(--panel); }
+.dispute-side h3 { margin-bottom: 8px; }
+.dispute-side .task-brief { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 0; }
+.dialog-body h3 { margin: 15px 0 6px; }
+@media (max-width: 767px) { .dispute-side .task-brief { grid-template-columns: 1fr; } }

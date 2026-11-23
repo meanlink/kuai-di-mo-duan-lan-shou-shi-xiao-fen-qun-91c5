@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from . import disputes
 from .models import PickupBatch, PickupScan, Station, audit
 
 FIELDS = ['parcel_code', 'planned_at', 'scanned_at']
@@ -46,7 +47,20 @@ def station_profiles(db, window):
     ]
 
 
-def batch_record(batch, include_scans=False):
+def dispute_marks(batch, rows):
+    """批次内各面单涉及的裁定标记：待裁定、裁定保留在原批、裁定补入新批。"""
+    marks = {}
+    for row in rows:
+        if row.status == 'pending':
+            marks[row.parcel_code] = '重单待裁定'
+        elif row.status == 'upheld' and row.first_batch_code == batch.code:
+            marks[row.parcel_code] = '重单裁定保留'
+        elif row.status == 'reassigned' and row.later_batch_code == batch.code:
+            marks[row.parcel_code] = '重单裁定补入'
+    return marks
+
+
+def batch_record(batch, include_scans=False, disputes=()):
     scans = sorted(batch.scans, key=lambda scan: (scan.scanned_at, scan.parcel_code))
     result = {
         'code': batch.code, 'station_code': batch.station_code, 'station_name': batch.station.name,
@@ -55,8 +69,10 @@ def batch_record(batch, include_scans=False):
         **metrics([scan.elapsed_minutes for scan in scans], batch.station.sla_minutes),
     }
     if include_scans:
+        marks = dispute_marks(batch, disputes)
         result['scans'] = [
-            {field: getattr(scan, field) for field in (*FIELDS, 'elapsed_minutes')} for scan in scans
+            {field: getattr(scan, field) for field in (*FIELDS, 'elapsed_minutes')}
+            | {'dispute': marks.get(scan.parcel_code)} for scan in scans
         ]
     return result
 
@@ -109,10 +125,37 @@ def import_batch(db, payload, user):
     station = db.get(Station, payload.station_code)
     if not station:
         raise HTTPException(404, '网点不存在')
-    batch = PickupBatch(code=payload.code, station=station, business_date=payload.business_date,
-                        shift=payload.shift, source_name=payload.source_name, recorded_by=user, scans=parse_rows(payload))
+    if db.get(PickupBatch, payload.code):
+        raise HTTPException(409, '批次号已存在，本批未入账')
+    parsed = parse_rows(payload)
+    batch = PickupBatch(code=payload.code, station_code=station.code, business_date=payload.business_date,
+                        shift=payload.shift, source_name=payload.source_name, recorded_by=user)
+    owners = {
+        scan.parcel_code: (scan, station_code)
+        for scan, station_code in db.execute(
+            select(PickupScan, PickupBatch.station_code)
+            .join(PickupBatch, PickupBatch.code == PickupScan.batch_code)
+            .where(PickupScan.parcel_code.in_([row.parcel_code for row in parsed]))
+        )
+    }
+    held, skipped = [], []
+    for scan in parsed:
+        owner = owners.get(scan.parcel_code)
+        if owner is None:
+            batch.scans.append(scan)
+        elif owner[1] == station.code:
+            # 同网点重报：保留先到记录，跳过晚到扫描
+            skipped.append(scan.parcel_code)
+        else:
+            # 跨网点重单：不随批入账，留待主管裁定
+            held.append(disputes.open_dispute(db, scan, batch, *owner))
     db.add(batch)
-    audit(db, user, 'batch_imported', batch.code, station=station.code, scans=len(batch.scans))
+    db.flush()
+    for row in held:
+        audit(db, user, 'dispute_opened', f'dispute:{row.id}', parcel=row.parcel_code,
+              first_batch=row.first_batch_code, later_batch=row.later_batch_code)
+    audit(db, user, 'batch_imported', batch.code, station=station.code, scans=len(batch.scans),
+          held=len(held), skipped=len(skipped))
     try:
         db.commit()
     except IntegrityError as error:
@@ -120,4 +163,10 @@ def import_batch(db, payload, user):
         if error.orig.args[0] == 1062:
             raise HTTPException(409, '批次号或面单编号已存在，本批未入账') from error
         raise
-    return batch_record(batch, include_scans=True)
+    record = batch_record(batch, include_scans=True)
+    record['duplicates'] = {
+        'held': [{'parcel_code': row.parcel_code, 'dispute_id': row.id,
+                  'first_batch_code': row.first_batch_code} for row in held],
+        'skipped': skipped,
+    }
+    return record

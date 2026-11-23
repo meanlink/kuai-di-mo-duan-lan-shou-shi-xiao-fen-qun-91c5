@@ -1,6 +1,7 @@
 import {api} from '../api.js';
 import {action, badge, closeDialog, empty, errorText, esc, notice, num, options, picker, rate, showDialog, table} from '../components.js';
 import {canOperate, shifts, state} from '../state.js';
+import {bindDisputeButtons, disputeBadge, disputeSection} from './disputes.js';
 
 const sampleCSV = 'parcel_code,planned_at,scanned_at\nSUP-1121-001,2026-11-21 16:00,2026-11-21 17:16\nSUP-1121-002,2026-11-21 16:04,2026-11-21 17:29\n';
 
@@ -39,28 +40,41 @@ function importDialog(stations, refresh) {
     const batch = await api.importBatch(data);
     state.station = batch.station_code;
     if (batch.business_date < state.window.start || batch.business_date > state.window.end) state.window = {start: batch.business_date, end: batch.business_date};
-    closeDialog(); notice(`${batch.code} 已入账，${batch.count} 张面单`); await refresh();
+    const held = batch.duplicates?.held.length ?? 0;
+    const skipped = batch.duplicates?.skipped.length ?? 0;
+    closeDialog();
+    notice(`${batch.code} 已入账，${batch.count} 张面单` +
+      (held ? `，${held} 张跨网点重单待主管裁定` : '') + (skipped ? `，${skipped} 张同网点重报已跳过` : ''));
+    await refresh();
   });
 }
 
 export async function batches(node, refresh, current) {
-  const [records, {stations}] = await Promise.all([api.batches(state.station), api.stations()]);
+  const [records, {stations}, disputeRows] = await Promise.all([api.batches(state.station), api.stations(), api.disputes()]);
   if (!current()) return;
   node.innerHTML = `<div class="page-head"><div><span class="eyebrow">班次台账</span><h1>揽收扫描</h1><p>导入班次扫描，逐张核对首扫时间和超时面单。</p></div>${canOperate() ? '<button class="button primary" id="new-batch">登记扫描批次</button>' : ''}</div>
     <section class="paper"><header class="section-head"><div><h2>揽收批次台账</h2><p>批次号、面单号均唯一。校验失败时整批退回。</p></div>${picker()}</header>
     <div class="filter-row"><label>网点<select id="station">${options([['', '全部网点'], ...stations.map(row => [row.code, row.name])], state.station)}</select></label><span>共 ${records.length} 批</span></div>
     ${records.length ? table(['扫描批次 / 文件', '网点', '营业日', '班次', '面单数', 'P90 耗时', '超时率'], records.map(row => [
       `<button class="text-button mono" data-batch="${esc(row.code)}">${esc(row.code)}</button><small>${esc(row.source_name)}</small>`, esc(row.station_name), esc(row.business_date), badge(shifts[row.shift], 'neutral'), num(row.count), `${num(row.p90)} 分`, rate(row.late_rate),
-    ])) : empty('本窗口暂无扫描批次', '切换网点或日期，或请网点运营登记扫描。')}</section>`;
+    ])) : empty('本窗口暂无扫描批次', '切换网点或日期，或请网点运营登记扫描。')}</section>${disputeSection(disputeRows)}`;
   action(node.querySelector('#window-form'), async data => { const previous = state.window; state.window = data; try { await api.batches(state.station); } catch (error) { state.window = previous; throw error; } await refresh(); });
   node.querySelector('#station').onchange = event => { state.station = event.target.value; refresh(); };
   if (canOperate()) node.querySelector('#new-batch').onclick = () => importDialog(stations, refresh);
+  bindDisputeButtons(node, refresh);
   node.querySelectorAll('[data-batch]').forEach(button => { button.onclick = async () => {
     try {
       const batch = await api.batch(button.dataset.batch);
       if (!current()) return;
+      const rows = batch.disputes ?? [];
       showDialog(`扫描批次 ${batch.code}`, `<div class="detail-strip"><span>${esc(batch.station_name)} · ${esc(batch.business_date)} · ${shifts[batch.shift]}</span>${badge(`SLA ${batch.sla_minutes} 分`, 'neutral')}</div><p>${esc(batch.source_name)} · 录入人 ${esc(batch.recorded_by)}</p>
-        ${table(['面单', '计划时间', '首扫时间', '耗时', '判定'], batch.scans.map(scan => [esc(scan.parcel_code), esc(scan.planned_at.replace('T', ' ').slice(0, 16)), esc(scan.scanned_at.replace('T', ' ').slice(0, 16)), `${scan.elapsed_minutes} 分`, scan.elapsed_minutes > batch.sla_minutes ? badge('超时', 'coral') : badge('达标', 'green')]))}`);
+        ${table(['面单', '计划时间', '首扫时间', '耗时', '判定'], batch.scans.map(scan => [esc(scan.parcel_code), esc(scan.planned_at.replace('T', ' ').slice(0, 16)), esc(scan.scanned_at.replace('T', ' ').slice(0, 16)), `${scan.elapsed_minutes} 分`, `${scan.elapsed_minutes > batch.sla_minutes ? badge('超时', 'coral') : badge('达标', 'green')}${scan.dispute ? ` ${badge(scan.dispute, 'amber')}` : ''}`]))}
+        ${rows.length ? `<h3>重复面单裁定</h3>${table(['面单', '对方批次 / 网点', '状态'], rows.map(row => {
+          const other = row.first.batch_code === batch.code ? row.later : row.first;
+          return [`<button class="text-button mono" data-dispute="${row.id}">${esc(row.parcel_code)}</button>`,
+            `<span class="mono">${esc(other.batch_code)}</span><small>${esc(other.station_name)}</small>`, disputeBadge(row.status)];
+        }))}<p class="muted">点击面单可查看两边上报与裁定依据。</p>` : ''}`);
+      bindDisputeButtons(document.querySelector('#dialog'), refresh);
     } catch (error) { notice(error.message); }
   }; });
   if (state.scanEvidence) {

@@ -10,6 +10,7 @@ export const followupStates = {scheduled: '待采样', measured: '待签核', pa
 export const supportStates = {requested: '待审批', approved: '待核销', returned: '已退回', completed: '已核销'};
 export const handoffVerdicts = {insufficient: '样本不足', breach: '持续超时', clear: '达标'};
 export const recoveryStates = {proposed: '待派发', released: '待核验', replan: '待改派', verified: '已恢复'};
+export const disputeStates = {pending: '待裁定', upheld: '维持原批', reassigned: '改判新批'};
 export const roles = {admin: '区域主管', analyst: '网点运营', viewer: '质控观察'};
 export const shifts = {morning: '早班', afternoon: '午后班', evening: '晚班'};
 export const taskStates = {open: '待处理', doing: '处理中', resolved: '待复核', closed: '已结案'};

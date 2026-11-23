@@ -71,6 +71,17 @@ docker compose up -d --build --wait
 
 启动时创建 `handoff_audits`、`recovery_dispatches` 和 `recovery_checks`。存量已核销支援单可从「已核销，待核查」补做评估。新增记录在操作时写入，演示库使用原有账号、网点和扫描 seed。
 
+## 重复面单裁定
+
+手持机离线期间，两个网点恢复同步时可能报来同一面单。先同步的批次照常入账；晚到批次里归属其它网点的面单不随批入账，转为「待裁定」记录，同批其余面单照常入账。归属相同的重报保留先到记录，直接跳过。
+
+1. 区域主管在揽收扫描页的「重复面单裁定」打开待裁定面单，核对两边上报的批次、计划时间、首扫时间、耗时与录入人，填写至少 12 字裁定依据后裁定。
+2. 「维持原批」保留先到记录；「改判新批」在同一事务内把面单从原批次扣掉、补进晚到批次，两边网点画像随扫描归属即时变化。
+3. 两人同时提交裁定时只有首个生效，重复提交返回冲突且不会重复转记。已冻结的分群快照、复测基线与交接证据保留原数；裁定单记录首报批次与当前归属，可回查这票原来在哪一批。
+4. 揽收扫描页的批次详情标注涉及裁定的面单，裁定单与批次详情均可查看两边上报和裁定依据。
+
+演示：先以 `analyst` 登记一批白马湖（`HD-13`）面单，再从另一网点（如 `HD-01`）登记包含同一面单号的新批次，该票即转为待裁定，换 `admin` 在揽收扫描页裁定。启动时创建 `duplicate_disputes` 表。
+
 ## 开发与服务
 
 | 服务 | 说明 |
@@ -81,7 +92,7 @@ docker compose up -d --build --wait
 | `db` | MySQL 8.0，存网点、批次、面单、分群和整改状态 |
 | `redis` | 登录限流及进程依赖探活 |
 
-修改源码后用 `docker compose up -d --build --wait` 重建。CSS 和页面模块在 `frontend/src/`，模型在 `backend/src/models.py`，扫描口径在 `scans.py`，算法在 `clustering.py`，派单与流转在 `review.py`，演示数据在 `backend/scripts/seed_demo.py`。`db`、`redis` 与 worker 心跳目录用 Compose 命名卷。端口由 `.env` 的 `FRONTEND_PORT`、`BACKEND_PORT`、`DB_PORT` 指定。`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD` 为数据库配置。`JWT_SECRET` 为 JWT 签名密钥，`SEED_DEMO` 控制启动种子数据。
+修改源码后用 `docker compose up -d --build --wait` 重建。CSS 和页面模块在 `frontend/src/`，模型在 `backend/src/models.py`，扫描口径在 `scans.py`，算法在 `clustering.py`，派单与流转在 `review.py`，重复面单裁定在 `disputes.py`，演示数据在 `backend/scripts/seed_demo.py`。`db`、`redis` 与 worker 心跳目录用 Compose 命名卷。端口由 `.env` 的 `FRONTEND_PORT`、`BACKEND_PORT`、`DB_PORT` 指定。`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD` 为数据库配置。`JWT_SECRET` 为 JWT 签名密钥，`SEED_DEMO` 控制启动种子数据。
 
 共享枚举定义位置如下。
 
@@ -94,6 +105,7 @@ docker compose up -d --build --wait
 | 支援 `requested / approved / returned / completed` | `expansion_models.py`、`expansion.py`，审批输入在 `expansion_schemas.py` | `state.js` 的 `supportStates` |
 | 交接证据判定 `insufficient / breach / clear` | `handoff_models.py`、`handoff_metrics.py` | `state.js` 的 `handoffVerdicts` |
 | 恢复补派 `proposed / released / replan / verified` | `handoff_models.py`、`recovery_dispatch.py` | `state.js` 的 `recoveryStates` |
+| 重复面单裁定 `pending / upheld / reassigned` | `dispute_models.py`、`disputes.py` | `state.js` 的 `disputeStates` |
 | 角色 `admin / analyst / viewer` | `models.py` 的 `User.role`，`main.py` 的路由依赖 | `state.js` 的 `roles` |
 
 [MIT License](LICENSE)
